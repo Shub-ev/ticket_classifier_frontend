@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* Fonts only — box-sizing & margin resets are already handled by Tailwind Preflight.
+   NOTE: never add unlayered `* { padding: 0; margin: 0 }` rules here: unlayered
+   declarations outrank Tailwind's layered utilities and zero out ALL spacing. */
+@layer base {
+  body {
+    font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  }
+}
