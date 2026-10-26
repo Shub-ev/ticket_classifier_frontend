@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, friendlyError, ticketCandidates } from '../services/api';
+import { api, friendlyError, rejectHumanReviewTicket, ticketCandidates } from '../services/api';
 import { useAssignmentGroups, useHumanReviewTickets } from '../hooks/useTickets';
-import { Badge, ErrorBanner, Spinner, Toast } from '../components/ui';
+import { Badge, ErrorBanner, Modal, Spinner, Toast } from '../components/ui';
 import { cn, confBar, ticketLabel, timeAgo } from '../lib/format';
 
 /* Urgency derivation: priority field if present, else from confidence */
@@ -25,6 +25,9 @@ export default function HumanReview() {
   const [selectedId, setSelectedId] = useState(null);
   const [form, setForm] = useState({ group: '', justification: '' });
   const [assigning, setAssigning] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
   const [batching, setBatching] = useState(false);
   const [confFilter, setConfFilter] = useState('all');
   const [sortByUrgency, setSortByUrgency] = useState(false);
@@ -82,6 +85,24 @@ export default function HumanReview() {
       setToast({ tone: 'error', msg: friendlyError(err) });
     } finally {
       setAssigning(false);
+    }
+  };
+
+  const handleReject = async () => {
+    const reason = rejectReason.trim();
+    if (!selected || !reason) return;
+    setRejecting(true);
+    try {
+      await rejectHumanReviewTicket(selected.id, reason);
+      setToast({ tone: 'success', msg: `${ticketLabel(selected.id)} rejected.` });
+      setShowRejectModal(false);
+      setRejectReason('');
+      await refetch();
+      window.dispatchEvent(new Event('review-updated'));
+    } catch (err) {
+      setToast({ tone: 'error', msg: friendlyError(err) });
+    } finally {
+      setRejecting(false);
     }
   };
 
@@ -411,7 +432,7 @@ export default function HumanReview() {
                 <button
                   type="button"
                   onClick={handleAssign}
-                  disabled={assigning || groups.length === 0}
+                  disabled={assigning || rejecting || groups.length === 0}
                   className="mt-3 w-full inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-lg px-4 py-3 text-sm font-bold shadow-sm shadow-indigo-600/40 transition-colors"
                 >
                   {assigning ? <Spinner /> : (
@@ -419,11 +440,65 @@ export default function HumanReview() {
                   )}
                   Assign to Group & Resolve Queue
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRejectReason('');
+                    setShowRejectModal(true);
+                  }}
+                  disabled={assigning || rejecting}
+                  className="mt-2 w-full inline-flex items-center justify-center gap-2 bg-white border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm font-bold hover:bg-red-50 disabled:opacity-60 transition-colors"
+                >
+                  Reject Ticket
+                </button>
               </div>
             </>
           )}
         </section>
       </div>
+
+      {showRejectModal && selected && (
+        <Modal
+          onClose={() => {
+            if (!rejecting) setShowRejectModal(false);
+          }}
+          title={`Reject ${ticketLabel(selected.id)}`}
+        >
+          <div className="p-5">
+            <label htmlFor="human-review-reject-reason" className="block text-sm font-semibold text-slate-700 mb-2">
+              Reason for rejection
+            </label>
+            <textarea
+              id="human-review-reject-reason"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              disabled={rejecting}
+              rows={3}
+              placeholder="Enter a reason for rejecting this ticket"
+              className="w-full resize-y bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 disabled:opacity-60"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowRejectModal(false)}
+                disabled={rejecting}
+                className="border border-slate-200 bg-white rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleReject}
+                disabled={rejecting || !rejectReason.trim()}
+                className="inline-flex items-center gap-2 bg-red-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-red-700 disabled:opacity-50"
+              >
+                {rejecting ? <Spinner /> : null}
+                Reject Ticket
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>

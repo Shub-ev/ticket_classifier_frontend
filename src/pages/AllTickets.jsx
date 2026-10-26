@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, friendlyError, ticketCandidates } from '../services/api';
+import { api, friendlyError, rejectAssignedTicket, rejectHumanReviewTicket, ticketCandidates } from '../services/api';
 import { useAssignedTickets, useHumanReviewTickets, useAssignmentGroups } from '../hooks/useTickets';
 import { Badge, ErrorBanner, Modal, Spinner, Toast } from '../components/ui';
 import { cn, confBar, confBadge, ticketLabel, timeAgo } from '../lib/format';
@@ -54,7 +54,9 @@ export default function AllTickets() {
   const [page, setPage] = useState(1);
   const [inspect, setInspect] = useState(null);
   const [assigning, setAssigning] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
   const [modalGroup, setModalGroup] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
   const [toast, setToast] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -133,7 +135,10 @@ export default function AllTickets() {
 
   /* ----- Inspect modal assign ----- */
   const modalTicket = inspect ? dataset.find((t) => t.id === inspect) : null;
-  useEffect(() => { setModalGroup(''); }, [inspect]);
+  useEffect(() => {
+    setModalGroup('');
+    setRejectReason('');
+  }, [inspect]);
 
   const handleModalAssign = async () => {
     if (!modalTicket || !modalGroup) return;
@@ -151,21 +156,31 @@ export default function AllTickets() {
     }
   };
 
+  const handleModalReject = async () => {
+    const reason = rejectReason.trim();
+    if (!modalTicket || !reason) return;
+    setRejecting(true);
+    try {
+      const reject = modalTicket.state === 'pending' ? rejectHumanReviewTicket : rejectAssignedTicket;
+      await reject(modalTicket.id, reason);
+      setToast({ tone: 'success', msg: `INC-${modalTicket.id} rejected.` });
+      setInspect(null);
+      await Promise.all([rfA(), rfR()]);
+      window.dispatchEvent(new Event('review-updated'));
+    } catch (err) {
+      setToast({ tone: 'error', msg: friendlyError(err) });
+    } finally {
+      setRejecting(false);
+    }
+  };
+
   return (
     <div className="text-left space-y-5">
       {/* ===== Header ===== */}
       <div>
-        <div className="flex items-center gap-2 text-[11px] font-mono">
-          <span className="bg-slate-100 border border-slate-200 text-slate-600 rounded px-2 py-0.5 font-bold tracking-wide uppercase">Telemetry & Audit</span>
-          <span className="text-slate-400">Batch No: <b className="text-slate-700">BD-FINAL-2026-0387-BC</b></span>
-        </div>
         <div className="mt-1.5 flex flex-wrap items-start justify-between gap-4">
           <div className="max-w-3xl">
             <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">All Tickets Directory & AI Performance Audit</h1>
-            <p className="text-sm text-slate-500 mt-1.5 leading-relaxed">
-              Comprehensive directory of <b className="text-slate-700">{total} tickets</b> ({passed} Auto-Allocated, {pending} Human Reviewed,{' '}
-              {failed} Failed) with full prediction probabilities, confidence metrics, and assignment status.
-            </p>
           </div>
           <div className="flex items-center gap-2.5 shrink-0">
             <button type="button" onClick={handleExportJSON} className="inline-flex items-center gap-1.5 border border-slate-200 bg-white rounded-lg px-3.5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
@@ -300,6 +315,13 @@ export default function AllTickets() {
                     <button type="button" onClick={() => setInspect(t.id)} className="font-mono text-[11px] font-bold text-indigo-600 hover:text-indigo-800 hover:underline transition-colors">
                       ◎ Inspect
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setInspect(t.id)}
+                      className="ml-3 font-mono text-[11px] font-bold text-red-600 hover:text-red-800 hover:underline transition-colors"
+                    >
+                      Reject
+                    </button>
                   </td>
                 </tr>
               );
@@ -341,34 +363,58 @@ export default function AllTickets() {
               <pre className="mt-2 max-h-56 overflow-auto text-[11px] leading-relaxed bg-slate-900 text-emerald-300 rounded-lg p-3">{JSON.stringify(modalTicket, null, 2)}</pre>
             </details>
 
-            {modalTicket.state === 'pending' && (
-              <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-4">
-                <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-slate-600 mb-2">Quick Assignment</div>
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <div className="relative">
-                    <select
-                      value={modalGroup}
-                      onChange={(e) => setModalGroup(e.target.value)}
-                      disabled={lG || registry.length === 0}
-                      className="appearance-none bg-white border border-slate-300 rounded-lg px-3 py-2 pr-8 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60"
+            <div className="space-y-3">
+              {modalTicket.state === 'pending' && (
+                <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-4">
+                  <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-slate-600 mb-2">Quick Assignment</div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <div className="relative">
+                      <select
+                        value={modalGroup}
+                        onChange={(e) => setModalGroup(e.target.value)}
+                        disabled={lG || registry.length === 0 || assigning || rejecting}
+                        className="appearance-none bg-white border border-slate-300 rounded-lg px-3 py-2 pr-8 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60"
+                      >
+                        <option value="">{lG ? 'Loading groups…' : registry.length === 0 ? 'No groups available' : '— Select group —'}</option>
+                        {registry.map((g) => (<option key={g} value={g}>{g}</option>))}
+                      </select>
+                      <svg className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleModalAssign}
+                      disabled={assigning || rejecting || !modalGroup}
+                      className="inline-flex items-center gap-2 bg-indigo-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
                     >
-                      <option value="">{lG ? 'Loading groups…' : registry.length === 0 ? 'No groups available' : '— Select group —'}</option>
-                      {registry.map((g) => (<option key={g} value={g}>{g}</option>))}
-                    </select>
-                    <svg className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                      {assigning ? <Spinner /> : null}
+                      Assign to Group
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleModalAssign}
-                    disabled={assigning || !modalGroup}
-                    className="inline-flex items-center gap-2 bg-indigo-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
-                  >
-                    {assigning ? <Spinner /> : null}
-                    Assign to Group
-                  </button>
                 </div>
+              )}
+
+              <div className="bg-red-50/70 border border-red-100 rounded-xl p-4">
+                <label htmlFor="reject-reason" className="block text-[11px] font-mono font-bold uppercase tracking-wider text-slate-600 mb-2">Reject Ticket</label>
+                <textarea
+                  id="reject-reason"
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  disabled={assigning || rejecting}
+                  rows={2}
+                  placeholder="Enter a reason for rejecting this ticket"
+                  className="w-full resize-y bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 disabled:opacity-60"
+                />
+                <button
+                  type="button"
+                  onClick={handleModalReject}
+                  disabled={assigning || rejecting || !rejectReason.trim()}
+                  className="mt-2 inline-flex items-center gap-2 bg-red-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
+                >
+                  {rejecting ? <Spinner /> : null}
+                  Reject Ticket
+                </button>
               </div>
-            )}
+            </div>
           </div>
         </Modal>
       )}

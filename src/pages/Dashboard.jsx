@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, friendlyError, normalizeTicket, ticketCandidates } from '../services/api';
+import { api, friendlyError, normalizeTicket, rejectHumanReviewTicket, ticketCandidates } from '../services/api';
 import { useAssignedTickets, useHumanReviewTickets } from '../hooks/useTickets';
-import { Badge, ErrorBanner, Spinner, Toast } from '../components/ui';
+import { Badge, ErrorBanner, Modal, Spinner, Toast } from '../components/ui';
 import ConfidenceDonut from '../components/ConfidenceDonut';
 import KpiCard from '../components/KpiCard';
 import { cn, confBar, confBadge, ticketLabel, ticketState } from '../lib/format';
@@ -37,6 +37,9 @@ export default function Dashboard() {
   const [result, setResult] = useState(null);
   const [showRaw, setShowRaw] = useState(false);
   const [toast, setToast] = useState(null);
+  const [ticketToReject, setTicketToReject] = useState(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejecting, setRejecting] = useState(false);
   const simulatorRef = useRef(null);
 
   /* 10s auto-poll of the triage stream ("10s Sync Active") */
@@ -108,7 +111,22 @@ export default function Dashboard() {
   const candidates = useMemo(() => (result ? ticketCandidates(result) : []), [result]);
 
   /* ----- Recent stream rows for the re-test matrix ----- */
-  const recent = useMemo(() => [...assignedTickets, ...reviewTickets].slice(0, 5), [assignedTickets, reviewTickets]);
+  const recent = useMemo(() => [...assignedTickets, ...reviewTickets]
+    .map((ticket, index) => ({
+      ticket,
+      index,
+      isHumanReview: reviewTickets.includes(ticket),
+      createdAt: Date.parse(ticket.created_at ?? ''),
+    }))
+    .sort((a, b) => {
+      const aHasDate = Number.isFinite(a.createdAt);
+      const bHasDate = Number.isFinite(b.createdAt);
+      if (aHasDate && bHasDate) return b.createdAt - a.createdAt || a.index - b.index;
+      if (aHasDate) return -1;
+      if (bHasDate) return 1;
+      return a.index - b.index;
+    })
+    .slice(0, 5), [assignedTickets, reviewTickets]);
 
   const seedSimulator = (t) => {
     setShortDesc(t.short_description || '');
@@ -117,23 +135,32 @@ export default function Dashboard() {
     simulatorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
+  const handleRejectTicket = async () => {
+    const reason = rejectReason.trim();
+    if (!ticketToReject || !reason) return;
+    setRejecting(true);
+    try {
+      await rejectHumanReviewTicket(ticketToReject.id, reason);
+      setToast({ tone: 'success', msg: `${ticketLabel(ticketToReject.id)} rejected.` });
+      setTicketToReject(null);
+      setRejectReason('');
+      await Promise.all([refetchReview(), refetchAssigned()]);
+      window.dispatchEvent(new Event('review-updated'));
+    } catch (err) {
+      setToast({ tone: 'error', msg: friendlyError(err) });
+    } finally {
+      setRejecting(false);
+    }
+  };
+
   const apiError = reviewError || assignedError;
 
   return (
     <div className="space-y-6 text-left">
       {/* ===== Page header ===== */}
       <div>
-        <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-widest text-slate-500">
-          <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-          Live Operational Telemetry / v3.4 NLP Core
-        </div>
         <div className="mt-1.5 flex flex-wrap items-end justify-between gap-2">
           <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">IT Classification Engine & Triage Stream</h1>
-          <div className="font-mono text-xs text-slate-500">
-            Active Batch: <span className="font-bold text-slate-800">Prod-Syn-94</span>
-            <span className="mx-3 text-slate-300">/</span>
-            Latency p99: <span className="font-bold text-slate-800">88ms</span>
-          </div>
         </div>
       </div>
 
@@ -407,7 +434,6 @@ export default function Dashboard() {
               <svg className="w-5 h-5 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
               Recent Triage Stream & Quick Re-Test Matrix
             </h2>
-            <p className="text-xs text-slate-500 mt-1">Click any queued item to instantly re-populate the simulator and recalculate confidence distributions.</p>
           </div>
           <div className="flex items-center gap-2 font-mono text-[11px] text-slate-500">
             Auto-poll: <Badge tone="emerald">10s Sync Active</Badge>
@@ -424,7 +450,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {recent.map((t) => {
+              {recent.map(({ ticket: t, isHumanReview }) => {
                 const state = ticketState(t);
                 const b = confBadge(t.confidence);
                 return (
@@ -457,6 +483,18 @@ export default function Dashboard() {
                       >
                         Re-Test
                       </button>
+                      {isHumanReview && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTicketToReject(t);
+                            setRejectReason('');
+                          }}
+                          className="ml-2 bg-red-50 hover:bg-red-100 border border-red-200 rounded-md px-3 py-1 font-mono text-[11px] font-bold text-red-700 transition-colors"
+                        >
+                          Reject
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -465,6 +503,49 @@ export default function Dashboard() {
           </table>
         </div>
       </section>
+
+      {ticketToReject && (
+        <Modal
+          onClose={() => {
+            if (!rejecting) setTicketToReject(null);
+          }}
+          title={`Reject ${ticketLabel(ticketToReject.id)}`}
+        >
+          <div className="p-5">
+            <label htmlFor="dashboard-reject-reason" className="block text-sm font-semibold text-slate-700 mb-2">
+              Reason for rejection
+            </label>
+            <textarea
+              id="dashboard-reject-reason"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              disabled={rejecting}
+              rows={3}
+              placeholder="Enter a reason for rejecting this ticket"
+              className="w-full resize-y bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 disabled:opacity-60"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTicketToReject(null)}
+                disabled={rejecting}
+                className="border border-slate-200 bg-white rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRejectTicket}
+                disabled={rejecting || !rejectReason.trim()}
+                className="inline-flex items-center gap-2 bg-red-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-red-700 disabled:opacity-50"
+              >
+                {rejecting ? <Spinner /> : null}
+                Reject Ticket
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>

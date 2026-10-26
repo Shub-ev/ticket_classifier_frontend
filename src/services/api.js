@@ -41,6 +41,20 @@ async function request(path, options = {}, prefix = '/api') {
   return data;
 }
 
+export const rejectHumanReviewTicket = (id, reason = '') =>
+  request('/triage/human_review/reject', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: String(id), reason: String(reason) }),
+  });
+
+export const rejectAssignedTicket = (id, reason = '') =>
+  request('/triage/assigned/reject', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: String(id), reason: String(reason) }),
+  });
+
 /** Accepts `array` OR `{tickets: [...]}` / `{items: [...]}` / `{results: [...]}` response shapes */
 export function toList(data, ...keys) {
   if (Array.isArray(data)) return data;
@@ -150,4 +164,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: String(id), assignment_group: String(assignment_group) }),
     }),
+
+  rejectHumanReviewTicket,
+  rejectAssignedTicket,
 };
